@@ -1,8 +1,10 @@
 /*
 This function monitors a storage account container location folder named "input" for new MP4 files.
 These files may be uploaded by the Aspera On Demand service available through the Azure Marketplace.
-The azuredeploy.json template is configured to create all of the resources, including the Aspera On Demand service
-which is seperately licensed.  
+Please create a Media Services Account and a Service Principal to access it;
+Then the azuredeploy.json template is configured to create the resources, including the Aspera On Demand service
+which is seperately licensed. 
+Please create the container "input" in the new storage account.
 
 Once a file is uploaded through the Aspera Client or Aspera Drive, this Function will trigger the ingest and creation of
 a new Media Services Asset. 
@@ -29,19 +31,21 @@ using System.IO;
 using Microsoft.WindowsAzure.Storage;
 using Microsoft.WindowsAzure.Storage.Blob;
 using Microsoft.WindowsAzure.Storage.Auth;
+using Microsoft.IdentityModel.Clients.ActiveDirectory;
 
 // Read values from the App.config file.
-private static readonly string _mediaServicesAccountName = Environment.GetEnvironmentVariable("AMSAccount");
-private static readonly string _mediaServicesAccountKey = Environment.GetEnvironmentVariable("AMSKey");
 static string _storageAccountName = Environment.GetEnvironmentVariable("MediaServicesStorageAccountName");
 static string _storageAccountKey = Environment.GetEnvironmentVariable("MediaServicesStorageAccountKey");
 
+static readonly string _AADTenantDomain = Environment.GetEnvironmentVariable("AMSAADTenantDomain");
+static readonly string _RESTAPIEndpoint = Environment.GetEnvironmentVariable("AMSRESTAPIEndpoint");
 
-private static CloudStorageAccount _destinationStorageAccount = null;
+static readonly string _mediaservicesClientId = Environment.GetEnvironmentVariable("AMSClientId");
+static readonly string _mediaservicesClientSecret = Environment.GetEnvironmentVariable("AMSClientSecret");
 
 // Field for service context.
 private static CloudMediaContext _context = null;
-private static MediaServicesCredentials _cachedCredentials = null;
+private static CloudStorageAccount _destinationStorageAccount = null;
 
 public static void Run(CloudBlockBlob inputBlob, string fileName, string fileExtension, TraceWriter log)
 {
@@ -53,18 +57,19 @@ public static void Run(CloudBlockBlob inputBlob, string fileName, string fileExt
     // given blob. If the fifth try fails, the SDK adds a message to a queue named webjobs-blobtrigger-poison.
 
     log.Info($"C# Blob trigger function processed: {fileName}.{fileExtension}");
-    log.Info($"Using Azure Media Services account : {_mediaServicesAccountName}");
+    log.Info($"Using Azure Media Service Rest API Endpoint : {_RESTAPIEndpoint}");
 
 
     try
     {
-        // Create and cache the Media Services credentials in a static class variable.
-        _cachedCredentials = new MediaServicesCredentials(
-                        _mediaServicesAccountName,
-                        _mediaServicesAccountKey);
+        AzureAdTokenCredentials tokenCredentials = new AzureAdTokenCredentials(_AADTenantDomain,
+                           new AzureAdClientSymmetricKey(_mediaservicesClientId, _mediaservicesClientSecret),
+                           AzureEnvironments.AzureCloudEnvironment);
 
-        // Used the chached credentials to create CloudMediaContext.
-        _context = new CloudMediaContext(_cachedCredentials);
+        AzureAdTokenProvider tokenProvider = new AzureAdTokenProvider(tokenCredentials);
+
+        _context = new CloudMediaContext(new Uri(_RESTAPIEndpoint), tokenProvider);
+
 
         // Step 1:  Copy the Blob into a new Input Asset for the Job
         // ***NOTE: Ideally we would have a method to ingest a Blob directly here somehow. 
@@ -75,7 +80,7 @@ public static void Run(CloudBlockBlob inputBlob, string fileName, string fileExt
 
         log.Info("Deleting the source asset from the input container");
         inputBlob.DeleteIfExists();
-        
+
         // Step 2: Create an Encoding Job and then exit the function. 
 
         // Declare a new encoding job with the Standard encoder
@@ -89,7 +94,7 @@ public static void Run(CloudBlockBlob inputBlob, string fileName, string fileExt
         ITask task = job.Tasks.AddNew("Aspera Ingest Encode to Adaptive",
             processor,
             "Adaptive Streaming",
-            TaskOptions.None); 
+            TaskOptions.None);
 
         // Specify the input asset to be encoded.
         task.InputAssets.Add(newAsset);
@@ -98,7 +103,7 @@ public static void Run(CloudBlockBlob inputBlob, string fileName, string fileExt
         // This output is specified as AssetCreationOptions.None, which 
         // means the output asset is not encrypted. 
         task.OutputAssets.AddNew(fileName, AssetCreationOptions.None);
-        
+
         job.Submit();
         log.Info("Job Submitted");
 
