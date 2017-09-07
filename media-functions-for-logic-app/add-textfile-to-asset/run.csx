@@ -1,4 +1,3 @@
-/* test comment to check for version control latency.  Steveng */
 /*
 This function adds a text file to an existing asset.
 As a option, the text can be converted from ttml to vtt (useful when the ttml has been translated with MS Translator and the user wants a VTT file for Azure Media Player
